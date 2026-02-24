@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+from pathlib import Path
 from loguru import logger
 from telegram import BotCommand, Update, ReplyParameters
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -210,6 +211,24 @@ class TelegramChannel(BaseChannel):
             return "audio"
         return "document"
 
+    @staticmethod
+    def _document_display_name(media_path: str) -> str:
+        """Display filename for sending: strip file_id prefix if present (e.g. abc123_report.pdf -> report.pdf)."""
+        name = Path(media_path).name
+        # Incoming docs are saved as "{file_id[:16]}_{original_name}"
+        if len(name) > 17 and name[16] == "_":
+            return name[17:]
+        return name
+
+    @staticmethod
+    def _safe_filename(name: str | None, max_len: int = 200) -> str:
+        """Sanitize filename: keep only safe chars, strip path, limit length."""
+        if not name or not name.strip():
+            return "document"
+        safe = "".join(c for c in name if c.isalnum() or c in "._- ")
+        safe = safe.strip(" .") or "document"
+        return safe[:max_len] if len(safe) > max_len else safe
+
     async def send(self, msg: OutboundMessage) -> None:
         """Send a message through Telegram."""
         if not self._app:
@@ -243,14 +262,14 @@ class TelegramChannel(BaseChannel):
                     "audio": self._app.bot.send_audio,
                 }.get(media_type, self._app.bot.send_document)
                 param = "photo" if media_type == "photo" else media_type if media_type in ("voice", "audio") else "document"
-                with open(media_path, 'rb') as f:
-                    await sender(
-                        chat_id=chat_id, 
-                        **{param: f},
-                        reply_parameters=reply_params
-                    )
+                display_name = self._document_display_name(media_path)
+                with open(media_path, "rb") as f:
+                    kwargs = {param: f, "reply_parameters": reply_params}
+                    if param == "document":
+                        kwargs["filename"] = display_name
+                    await sender(chat_id=chat_id, **kwargs)
             except Exception as e:
-                filename = media_path.rsplit("/", 1)[-1]
+                filename = Path(media_path).name
                 logger.error("Failed to send media {}: {}", media_path, e)
                 await self._app.bot.send_message(
                     chat_id=chat_id,
@@ -362,14 +381,19 @@ class TelegramChannel(BaseChannel):
         if media_file and self._app:
             try:
                 file = await self._app.bot.get_file(media_file.file_id)
-                ext = self._get_extension(media_type, getattr(media_file, 'mime_type', None))
-                
-                # Save to workspace/media/
-                from pathlib import Path
+                orig_name = getattr(media_file, "file_name", None)
+                ext = self._get_extension(
+                    media_type,
+                    getattr(media_file, "mime_type", None),
+                    orig_name,
+                )
                 media_dir = Path.home() / ".nanobot" / "media"
                 media_dir.mkdir(parents=True, exist_ok=True)
-                
-                file_path = media_dir / f"{media_file.file_id[:16]}{ext}"
+                if media_type == "file" and orig_name:
+                    safe_name = self._safe_filename(orig_name)
+                    file_path = media_dir / f"{media_file.file_id[:16]}_{safe_name}"
+                else:
+                    file_path = media_dir / f"{media_file.file_id[:16]}{ext}"
                 await file.download_to_drive(str(file_path))
                 
                 media_paths.append(str(file_path))
@@ -443,15 +467,21 @@ class TelegramChannel(BaseChannel):
         """Log polling / handler errors instead of silently swallowing them."""
         logger.error("Telegram error: {}", context.error)
 
-    def _get_extension(self, media_type: str, mime_type: str | None) -> str:
-        """Get file extension based on media type."""
+    def _get_extension(self, media_type: str, mime_type: str | None, file_name: str | None = None) -> str:
+        """Get file extension from MIME type, file name, or media type fallback."""
+        if file_name and "." in file_name:
+            return "." + file_name.rsplit(".", 1)[-1].lower()
         if mime_type:
             ext_map = {
                 "image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif",
                 "audio/ogg": ".ogg", "audio/mpeg": ".mp3", "audio/mp4": ".m4a",
+                "application/pdf": ".pdf",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+                "application/msword": ".doc",
+                "application/vnd.ms-excel": ".xls",
             }
             if mime_type in ext_map:
                 return ext_map[mime_type]
-        
         type_map = {"image": ".jpg", "voice": ".ogg", "audio": ".mp3", "file": ""}
         return type_map.get(media_type, "")

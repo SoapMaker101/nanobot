@@ -1,10 +1,120 @@
 """File system tools: read, write, edit."""
 
 import difflib
+import mimetypes
 from pathlib import Path
 from typing import Any
 
 from nanobot.agent.tools.base import Tool
+
+
+def _read_pdf(file_path: Path) -> str:
+    """Extract text from a PDF file."""
+    try:
+        import pdfplumber
+    except ImportError:
+        return "Error: Reading PDF requires the pdfplumber package. Install with: pip install pdfplumber"
+    try:
+        with pdfplumber.open(file_path) as pdf:
+            parts = []
+            for page in pdf.pages:
+                text = page.extract_text()
+                if text:
+                    parts.append(text)
+            return "\n\n".join(parts) if parts else "The PDF file contains no extractable text (may be scanned/image-only)."
+    except Exception as e:
+        return f"Error reading PDF: {e}"
+
+
+def _read_docx(file_path: Path) -> str:
+    """Extract text from a DOCX file."""
+    try:
+        import docx
+    except ImportError:
+        return "Error: Reading DOCX requires the python-docx package. Install with: pip install python-docx"
+    try:
+        doc = docx.Document(str(file_path))
+        paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+        if not paragraphs:
+            return "The DOCX file contains no text."
+        return "\n".join(paragraphs)
+    except Exception as e:
+        return f"Error reading DOCX: {e}"
+
+
+def _read_excel(file_path: Path) -> str:
+    """Extract data from an Excel file (.xlsx / .xls)."""
+    try:
+        import openpyxl
+    except ImportError:
+        return "Error: Reading Excel requires the openpyxl package. Install with: pip install openpyxl"
+    try:
+        wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+        parts = []
+        for sheet in wb.worksheets:
+            rows = list(sheet.iter_rows(values_only=True))
+            if rows:
+                parts.append(f"Sheet: {sheet.title}")
+                for row in rows:
+                    parts.append("\t".join(str(c) if c is not None else "" for c in row))
+        wb.close()
+        return "\n".join(parts) if parts else "The Excel file contains no data."
+    except Exception as e:
+        return f"Error reading Excel: {e}"
+
+
+def _read_text_with_encoding(file_path: Path) -> str:
+    """Read a text file, trying UTF-8 then common fallbacks."""
+    raw = file_path.read_bytes()
+    for encoding in ("utf-8", "utf-8-sig", "cp1251", "latin-1"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
+def _smart_read(file_path: Path) -> str:
+    """Read file content based on extension (PDF, DOCX, XLSX, or plain text)."""
+    ext = file_path.suffix.lower()
+    if ext == ".pdf":
+        return _read_pdf(file_path)
+    if ext in (".docx", ".doc"):
+        return _read_docx(file_path)
+    if ext in (".xlsx", ".xls"):
+        return _read_excel(file_path)
+    if ext and mimetypes.guess_type(str(file_path))[0] and (mimetypes.guess_type(str(file_path))[0] or "").startswith("image/"):
+        return f"This is an image file ({file_path.suffix}). Use other tools to process images."
+    return _read_text_with_encoding(file_path)
+
+
+def _write_docx(file_path: Path, content: str) -> str:
+    """Create a DOCX file with the given text content."""
+    try:
+        import docx
+    except ImportError:
+        return "Error: Creating DOCX requires python-docx. Install with: pip install python-docx"
+    doc = docx.Document()
+    for block in content.strip().split("\n\n"):
+        doc.add_paragraph(block.replace("\n", " "))
+    doc.save(str(file_path))
+    return f"Successfully wrote DOCX to {file_path}"
+
+
+def _write_xlsx(file_path: Path, content: str) -> str:
+    """Create an XLSX file. Content: one value per line (column A), or tab-separated for multiple columns."""
+    try:
+        import openpyxl
+    except ImportError:
+        return "Error: Creating Excel requires openpyxl. Install with: pip install openpyxl"
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    for row_idx, line in enumerate(content.strip().splitlines(), start=1):
+        cells = line.split("\t")
+        for col_idx, val in enumerate(cells, start=1):
+            ws.cell(row=row_idx, column=col_idx, value=val.strip() if isinstance(val, str) else val)
+    wb.save(str(file_path))
+    return f"Successfully wrote Excel to {file_path}"
 
 
 def _resolve_path(path: str, workspace: Path | None = None, allowed_dir: Path | None = None) -> Path:
@@ -31,7 +141,7 @@ class ReadFileTool(Tool):
     
     @property
     def description(self) -> str:
-        return "Read the contents of a file at the given path."
+        return "Read the contents of a file. Supports .txt, .docx, .pdf, .xlsx (and .doc, .xls). Use the full path including extension."
     
     @property
     def parameters(self) -> dict[str, Any]:
@@ -40,7 +150,7 @@ class ReadFileTool(Tool):
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The file path to read"
+                    "description": "The file path to read (include extension, e.g. .docx or .pdf)"
                 }
             },
             "required": ["path"]
@@ -53,9 +163,7 @@ class ReadFileTool(Tool):
                 return f"Error: File not found: {path}"
             if not file_path.is_file():
                 return f"Error: Not a file: {path}"
-
-            content = file_path.read_text(encoding="utf-8")
-            return content
+            return _smart_read(file_path)
         except PermissionError as e:
             return f"Error: {e}"
         except Exception as e:
@@ -75,8 +183,11 @@ class WriteFileTool(Tool):
     
     @property
     def description(self) -> str:
-        return "Write content to a file at the given path. Creates parent directories if needed."
-    
+        return (
+            "Write content to a file at the given path. Creates parent directories if needed. "
+            "Supports .txt (plain text), .docx (Word), .xlsx (Excel). Use a path ending in .docx or .xlsx to create those formats."
+        )
+
     @property
     def parameters(self) -> dict[str, Any]:
         return {
@@ -84,20 +195,25 @@ class WriteFileTool(Tool):
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The file path to write to"
+                    "description": "The file path to write to (e.g. report.txt, report.docx, data.xlsx)"
                 },
                 "content": {
                     "type": "string",
-                    "description": "The content to write"
+                    "description": "The content to write (text; for xlsx, use one value per line for first column, or tab-separated for columns)"
                 }
             },
             "required": ["path", "content"]
         }
-    
+
     async def execute(self, path: str, content: str, **kwargs: Any) -> str:
         try:
             file_path = _resolve_path(path, self._workspace, self._allowed_dir)
             file_path.parent.mkdir(parents=True, exist_ok=True)
+            ext = file_path.suffix.lower()
+            if ext == ".docx":
+                return _write_docx(file_path, content)
+            if ext == ".xlsx":
+                return _write_xlsx(file_path, content)
             file_path.write_text(content, encoding="utf-8")
             return f"Successfully wrote {len(content)} bytes to {file_path}"
         except PermissionError as e:
