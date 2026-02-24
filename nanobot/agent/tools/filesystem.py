@@ -141,8 +141,11 @@ class ReadFileTool(Tool):
     
     @property
     def description(self) -> str:
-        return "Read the contents of a file. Supports .txt, .docx, .pdf, .xlsx (and .doc, .xls). Use the full path including extension."
-    
+        return (
+            "Read the contents of a file. When the user sends you a file, the message contains a path like [file: /path/to/file]. "
+            "Call read_file with that path to get the text. Supports .txt, .docx, .pdf, .xlsx (and .doc, .xls)."
+        )
+
     @property
     def parameters(self) -> dict[str, Any]:
         return {
@@ -150,7 +153,7 @@ class ReadFileTool(Tool):
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The file path to read (include extension, e.g. .docx or .pdf)"
+                    "description": "Full path to the file (e.g. from [file: /path] in the user message). Use as-is including extension."
                 }
             },
             "required": ["path"]
