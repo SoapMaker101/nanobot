@@ -46,7 +46,10 @@ class MessageTool(Tool):
 
     @property
     def description(self) -> str:
-        return "Send a message to the user. Use this when you want to communicate something."
+        return (
+            "Send a message to the user. To send a FILE (e.g. after creating it with write_file), pass the file path in the media array: message(content='...', media=['hello.txt']). "
+            "Without media, only text is sent; with media, the file is attached."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -55,7 +58,7 @@ class MessageTool(Tool):
             "properties": {
                 "content": {
                     "type": "string",
-                    "description": "The message content to send"
+                    "description": "The message text to send"
                 },
                 "channel": {
                     "type": "string",
@@ -68,7 +71,7 @@ class MessageTool(Tool):
                 "media": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Optional: list of file paths to attach (images, audio, documents)"
+                    "description": "File paths to attach (e.g. ['hello.txt']). Required when sending a file to the user — use the same path you used in write_file."
                 }
             },
             "required": ["content"]

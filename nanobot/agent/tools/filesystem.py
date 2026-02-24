@@ -184,8 +184,8 @@ class WriteFileTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Write content to a file at the given path. Creates parent directories if needed. "
-            "Supports .txt (plain text), .docx (Word), .xlsx (Excel). Use a path ending in .docx or .xlsx to create those formats."
+            "CREATE a new file: pass path (e.g. hello.txt, report.docx) and content. Use this when the user asks to create or send a file — create with write_file first, then send with message(media=[path]). "
+            "Supports .txt, .docx, .xlsx. Do NOT use edit_file to create files; edit_file only replaces text in existing files."
         )
 
     @property
@@ -235,7 +235,10 @@ class EditFileTool(Tool):
     
     @property
     def description(self) -> str:
-        return "Edit a file by replacing old_text with new_text. The old_text must exist exactly in the file."
+        return (
+            "Replace old_text with new_text in an EXISTING file. Requires path, old_text, and new_text. "
+            "Use only when the file already exists. To CREATE a new file with content, use write_file instead."
+        )
     
     @property
     def parameters(self) -> dict[str, Any]:
